@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.git/
+.github/
+.ipynb_checkpoints/
+mlruns/
+monitoring/reports/
+monitoring/predictions_log.csv
+tests/
+notebooks/
+reports/
+.DS_Store
+.env
+.streamlit/secrets.toml

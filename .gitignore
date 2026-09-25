@@ -1,7 +1,24 @@
+# Environnements virtuels
+.venv/
+venv/
+
+# Python
 __pycache__/
 *.pyc
-.venv/
-.env
-.ipynb_checkpoints/
+.pytest_cache/
+
+# MLflow (tracking local — pas destiné à être versionné)
+mlruns/
+mlflow.db
+
+# Monitoring — logs générés en production, pas des données à versionner
+monitoring/predictions_log.csv
+monitoring/reports/
+
+# Artefacts temporaires générés par train_model.py (déjà loggés dans MLflow)
+confusion_matrix.png
+roc_curve.png
+
+# OS
 .DS_Store
-.streamlit/secrets.toml
+Thumbs.db

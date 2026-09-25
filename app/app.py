@@ -1,3 +1,4 @@
+import sys
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -6,6 +7,14 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pathlib import Path
+
+# Permet d'importer le package "monitoring" (situé à la racine du projet)
+# lorsque l'app est lancée avec `streamlit run app/app.py`
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from monitoring.logger import log_prediction  # noqa: E402
 
 st.set_page_config(
     page_title="Détection Cancer du Sein — ML",
@@ -57,14 +66,12 @@ def load_data():
 
 @st.cache_resource
 def load_model():
-    with open(PROJECT_DIR / "models" / "model.pkl", "rb") as f:
-        model = pickle.load(f)
-    with open(PROJECT_DIR / "models" / "scaler.pkl", "rb") as f:
-        scaler = pickle.load(f)
-    return model, scaler
+    with open(PROJECT_DIR / "models" / "pipeline.pkl", "rb") as f:
+        pipeline = pickle.load(f)
+    return pipeline
 
 df = load_data()
-model, scaler = load_model()
+pipeline = load_model()
 
 FEATURES = ["Age", "BMI", "Glucose", "Insulin", "HOMA", "Leptin", "Adiponectin", "Resistin", "MCP.1"]
 TARGET = "Classification"
@@ -81,7 +88,7 @@ RESULTS = pd.DataFrame([
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 🎗️ Navigation")
-    page = st.radio("", ["🏠 Accueil", "📊 Données", "📈 Visualisations", "🤖 Modèles & Résultats", "🔬 Prédiction Patient"])
+    page = st.radio("", ["🏠 Accueil", "📊 Données", "📈 Visualisations", "🤖 Modèles & Résultats", "🔬 Prédiction Patient", "🩺 Monitoring"])
     st.markdown("---")
     st.markdown("**Dataset :** Coimbra Breast Cancer")
     st.markdown(f"**Observations :** {len(df)}")
@@ -312,13 +319,27 @@ elif page == "🔬 Prédiction Patient":
 
     if submitted:
         patient = np.array([[age, bmi, glucose, insulin, homa, leptin, adiponectin, resistin, mcp1]])
-        patient_scaled = scaler.transform(patient)
-        prediction = model.predict(patient_scaled)[0]
+        prediction = pipeline.predict(patient)[0]
 
         try:
-            proba = model.predict_proba(patient_scaled)[0][1]
+            proba = pipeline.predict_proba(patient)[0][1]
         except Exception:
             proba = None
+
+        # Journalisation pour le monitoring de drift (Evidently) — ne bloque jamais
+        # l'affichage du résultat même si l'écriture du log échoue.
+        try:
+            log_prediction(
+                feature_values={
+                    "Age": age, "BMI": bmi, "Glucose": glucose, "Insulin": insulin,
+                    "HOMA": homa, "Leptin": leptin, "Adiponectin": adiponectin,
+                    "Resistin": resistin, "MCP.1": mcp1,
+                },
+                prediction=int(prediction),
+                probability=float(proba) if proba is not None else None,
+            )
+        except Exception as log_error:
+            st.warning(f"⚠️ La prédiction n'a pas pu être journalisée pour le monitoring : {log_error}")
 
         st.markdown("---")
         st.subheader("🧬 Résultat de la Prédiction")
@@ -391,3 +412,79 @@ elif page == "🔬 Prédiction Patient":
             "Moyenne Cancer": df[df[TARGET] == 1][FEATURES].mean().round(2),
         })
         st.dataframe(comparison.round(2), use_container_width=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE 6 — MONITORING (MLOps : data drift)
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "🩺 Monitoring":
+    st.title("🩺 Monitoring du Modèle en Production")
+    st.markdown("""
+    Cette page surveille la **dérive des données (data drift)** : elle compare la
+    distribution des biomarqueurs saisis en production (page *Prédiction Patient*)
+    à celle des données d'entraînement. Un drift important signale que le modèle
+    voit des patients statistiquement différents de ceux sur lesquels il a été
+    entraîné — un signal qu'un ré-entraînement pourrait être nécessaire.
+    """)
+
+    from monitoring.logger import load_predictions_log
+    log_df = load_predictions_log()
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Prédictions journalisées", len(log_df))
+    col2.metric("Seuil minimal pour un rapport", 10)
+    col3.metric("Cancer prédit", int(log_df["prediction"].sum()) if len(log_df) else 0)
+
+    st.markdown("---")
+
+    if len(log_df) == 0:
+        st.info("Aucune prédiction journalisée pour le moment. Utilisez la page "
+                "**🔬 Prédiction Patient** pour générer des données de production.")
+    elif len(log_df) < 10:
+        st.warning(f"Seulement **{len(log_df)}** prédiction(s) journalisée(s). "
+                   "Au moins 10 sont recommandées pour un rapport de drift statistiquement fiable.")
+        st.dataframe(log_df.tail(20), use_container_width=True)
+    else:
+        st.subheader("Historique des prédictions récentes")
+        st.dataframe(log_df.tail(20), use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("Rapport de Data Drift (Evidently)")
+
+        if st.button("🔍 Générer / rafraîchir le rapport de drift", use_container_width=True):
+            try:
+                from monitoring.drift_report import build_drift_report, get_drift_summary
+
+                with st.spinner("Génération du rapport Evidently en cours..."):
+                    summary = get_drift_summary()
+                    report_path = build_drift_report()
+
+                if summary.get("dataset_drift_detected"):
+                    st.error(f"🔴 Drift détecté sur {summary['n_drifted_features']}/"
+                              f"{summary['n_features']} variables.")
+                else:
+                    st.success(f"🟢 Aucun drift significatif détecté "
+                               f"({summary['n_drifted_features']}/{summary['n_features']} variables en drift).")
+
+                with open(report_path, "r", encoding="utf-8") as f:
+                    html_report = f.read()
+                st.components.v1.html(html_report, height=800, scrolling=True)
+
+                with open(report_path, "rb") as f:
+                    st.download_button("⬇️ Télécharger le rapport HTML complet", f,
+                                        file_name="data_drift_report.html", mime="text/html")
+            except ImportError:
+                st.error("Le package `evidently` n'est pas installé. "
+                         "Lancez `pip install -r requirements.txt`.")
+            except Exception as e:
+                st.error(f"Erreur lors de la génération du rapport : {e}")
+
+    st.markdown("---")
+    st.subheader("ℹ️ Pipeline MLOps de ce projet")
+    st.markdown("""
+    | Étape | Outil | Où |
+    |---|---|---|
+    | Entraînement + tracking des expériences | **MLflow** | `train/train_model.py` |
+    | Conteneurisation | **Docker** | `Dockerfile` |
+    | Intégration / déploiement continu | **GitHub Actions** | `.github/workflows/ci-cd.yml` |
+    | Détection de drift | **Evidently** | `monitoring/drift_report.py` |
+    """)
