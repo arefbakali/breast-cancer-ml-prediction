@@ -704,13 +704,6 @@ If there is a medical concern, a qualified healthcare professional should be con
 - **Email:** aref.bak-ali@dauphine.eu
 - **Portfolio:** https://portfolio-aref.vercel.app/
 
-## Contact
-
-- **GitHub:** https://github.com/arefbakali
-- **LinkedIn:** https://www.linkedin.com/in/aref-bak-ali/
-- **Email:** aref.bak-ali@dauphine.eu
-- **Portfolio:** https://portfolio-aref.vercel.app/
-
 ## Author
 
 **Aref Bak Ali**  
